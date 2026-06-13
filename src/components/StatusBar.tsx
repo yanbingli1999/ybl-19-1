@@ -10,6 +10,7 @@ export const StatusBar: React.FC = () => {
     storedPower,
     maxStorage,
     satisfaction,
+    openSettlement,
   } = useGameStore();
 
   const isDay = dayTime < 50;
@@ -137,6 +138,15 @@ export const StatusBar: React.FC = () => {
             </div>
           </div>
         </div>
+
+        <div className="h-10 w-px bg-gray-200" />
+
+        <button
+          onClick={openSettlement}
+          className="flex items-center gap-2 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-semibold py-2 px-4 rounded-xl shadow-lg transition-all duration-200 hover:scale-105 text-sm"
+        >
+          📊 结算
+        </button>
       </div>
     </div>
   );

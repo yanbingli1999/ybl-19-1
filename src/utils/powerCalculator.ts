@@ -18,19 +18,23 @@ export function getOppositeDirection(dir: number): number {
   return (dir + 2) % 4;
 }
 
-export function calculatePowerNetwork(grid: GridCell[][], dayTime: number): {
+export function calculatePowerNetwork(
+  grid: GridCell[][],
+  dayTime: number,
+  storedPower: number
+): {
   poweredCells: Set<string>;
   totalGeneration: number;
   totalConsumption: number;
   batteryCapacity: number;
 } {
-  const poweredCells = new Set<string>();
+  const isDay = dayTime < DAY_THRESHOLD;
   let totalGeneration = 0;
   let totalConsumption = 0;
   let batteryCapacity = 0;
-  const isDay = dayTime < DAY_THRESHOLD;
 
-  const sources: Array<{ x: number; y: number }> = [];
+  const windmillSources: Array<{ x: number; y: number; gen: number }> = [];
+  const batterySources: Array<{ x: number; y: number; discharge: number }> = [];
 
   for (let y = 0; y < GRID_SIZE; y++) {
     for (let x = 0; x < GRID_SIZE; x++) {
@@ -42,13 +46,10 @@ export function calculatePowerNetwork(grid: GridCell[][], dayTime: number): {
           ? BUILDING_STATS.windmill.dayGen
           : BUILDING_STATS.windmill.nightGen;
         totalGeneration += gen;
-        sources.push({ x, y });
-        poweredCells.add(`${x},${y}`);
+        windmillSources.push({ x, y, gen });
       }
       if (cell.type === 'battery') {
         batteryCapacity += BUILDING_STATS.battery.storage;
-        sources.push({ x, y });
-        poweredCells.add(`${x},${y}`);
       }
       if (cell.type === 'house') {
         totalConsumption += BUILDING_STATS.house.consumption;
@@ -59,11 +60,38 @@ export function calculatePowerNetwork(grid: GridCell[][], dayTime: number): {
     }
   }
 
-  const visited = new Set<string>();
-  const queue: Array<{ x: number; y: number }> = [...sources];
+  const availableFromBatteries = Math.max(0, storedPower);
+  const totalAvailable = totalGeneration + availableFromBatteries;
 
-  for (const s of sources) {
+  if (availableFromBatteries > 0) {
+    const batteryCount = grid.flat().filter(
+      (c) => c.type === 'battery' && !c.faulty
+    ).length;
+    if (batteryCount > 0) {
+      const dischargePerBattery = availableFromBatteries / batteryCount;
+      for (let y = 0; y < GRID_SIZE; y++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          const cell = grid[y][x];
+          if (cell.type === 'battery' && !cell.faulty) {
+            batterySources.push({ x, y, discharge: dischargePerBattery });
+          }
+        }
+      }
+    }
+  }
+
+  const allSources = [
+    ...windmillSources.map((s) => ({ x: s.x, y: s.y })),
+    ...batterySources.map((s) => ({ x: s.x, y: s.y })),
+  ];
+
+  const connectedCells = new Set<string>();
+  const visited = new Set<string>();
+  const queue: Array<{ x: number; y: number }> = [...allSources];
+
+  for (const s of allSources) {
     visited.add(`${s.x},${s.y}`);
+    connectedCells.add(`${s.x},${s.y}`);
   }
 
   while (queue.length > 0) {
@@ -109,11 +137,60 @@ export function calculatePowerNetwork(grid: GridCell[][], dayTime: number): {
 
       if (canConnectFromCurrent && canConnectFromNeighbor) {
         visited.add(key);
-        poweredCells.add(key);
+        connectedCells.add(key);
         if (neighbor.type === 'wire') {
           queue.push({ x: nx, y: ny });
         }
       }
+    }
+  }
+
+  const poweredCells = new Set<string>();
+
+  for (const s of allSources) {
+    poweredCells.add(`${s.x},${s.y}`);
+  }
+
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      const cell = grid[y][x];
+      if (cell.type === 'wire' && connectedCells.has(`${x},${y}`)) {
+        poweredCells.add(`${x},${y}`);
+      }
+    }
+  }
+
+  const connectedConsumers: Array<{
+    x: number;
+    y: number;
+    consumption: number;
+  }> = [];
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      const cell = grid[y][x];
+      if (
+        (cell.type === 'house' || cell.type === 'factory') &&
+        connectedCells.has(`${x},${y}`)
+      ) {
+        connectedConsumers.push({
+          x,
+          y,
+          consumption:
+            cell.type === 'house'
+              ? BUILDING_STATS.house.consumption
+              : BUILDING_STATS.factory.consumption,
+        });
+      }
+    }
+  }
+
+  let remainingPower = totalAvailable;
+  connectedConsumers.sort((a, b) => a.consumption - b.consumption);
+
+  for (const consumer of connectedConsumers) {
+    if (remainingPower >= consumer.consumption) {
+      remainingPower -= consumer.consumption;
+      poweredCells.add(`${consumer.x},${consumer.y}`);
     }
   }
 

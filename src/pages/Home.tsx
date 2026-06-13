@@ -1,6 +1,7 @@
 import { FloatingIsland } from '@/components/FloatingIsland';
 import { Toolbar } from '@/components/Toolbar';
 import { StatusBar } from '@/components/StatusBar';
+import { SettlementModal } from '@/components/SettlementModal';
 import { useGameLoop } from '@/hooks/useGameLoop';
 import { useGameStore } from '@/store/useGameStore';
 
@@ -61,6 +62,8 @@ export default function Home() {
           </p>
         </footer>
       </div>
+
+      <SettlementModal />
     </div>
   );
 }

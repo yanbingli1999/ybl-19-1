@@ -10,6 +10,15 @@ import {
 } from '../utils/constants';
 import { calculatePowerNetwork, countPoweredBuildings } from '../utils/powerCalculator';
 
+const STORAGE_KEY = 'floating-island-grid-game-save';
+
+interface PersistedState {
+  grid: GridCell[][];
+  dayTime: number;
+  storedPower: number;
+  satisfaction: number;
+}
+
 interface GameState {
   grid: GridCell[][];
   dayTime: number;
@@ -20,12 +29,15 @@ interface GameState {
   poweredCells: Set<string>;
   totalGeneration: number;
   totalConsumption: number;
+  showSettlement: boolean;
   setSelectedTool: (tool: ToolType) => void;
   placeOrRemove: (x: number, y: number) => void;
   rotateCell: (x: number, y: number) => void;
   repairCell: (x: number, y: number) => void;
   tick: () => void;
   resetGame: () => void;
+  openSettlement: () => void;
+  closeSettlement: () => void;
 }
 
 function createEmptyGrid(): GridCell[][] {
@@ -47,16 +59,91 @@ function createEmptyGrid(): GridCell[][] {
   return grid;
 }
 
+function saveToLocalStorage(state: PersistedState): void {
+  try {
+    const data = JSON.stringify({
+      grid: state.grid,
+      dayTime: state.dayTime,
+      storedPower: state.storedPower,
+      satisfaction: state.satisfaction,
+    });
+    localStorage.setItem(STORAGE_KEY, data);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function loadFromLocalStorage(): PersistedState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data && data.grid && Array.isArray(data.grid)) {
+      return {
+        grid: data.grid,
+        dayTime: data.dayTime ?? 20,
+        storedPower: data.storedPower ?? 10,
+        satisfaction: data.satisfaction ?? 50,
+      };
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return null;
+}
+
+function recalcGrid(grid: GridCell[][], dayTime: number, storedPower: number) {
+  const { poweredCells, totalGeneration, totalConsumption, batteryCapacity } =
+    calculatePowerNetwork(grid, dayTime, storedPower);
+
+  const newGrid = grid.map((row) => row.map((c) => ({ ...c })));
+  for (let yy = 0; yy < GRID_SIZE; yy++) {
+    for (let xx = 0; xx < GRID_SIZE; xx++) {
+      newGrid[yy][xx].powered = poweredCells.has(`${xx},${yy}`);
+    }
+  }
+
+  return { newGrid, poweredCells, totalGeneration, totalConsumption, batteryCapacity };
+}
+
+function initGame(): Omit<GameState, keyof GameStateActions> {
+  const saved = loadFromLocalStorage();
+  const grid = saved ? saved.grid : createEmptyGrid();
+  const dayTime = saved ? saved.dayTime : 20;
+  const storedPower = saved ? saved.storedPower : 10;
+  const satisfaction = saved ? saved.satisfaction : 50;
+
+  const { newGrid, poweredCells, totalGeneration, totalConsumption, batteryCapacity } =
+    recalcGrid(grid, dayTime, storedPower);
+
+  return {
+    grid: newGrid,
+    dayTime,
+    storedPower,
+    maxStorage: batteryCapacity,
+    satisfaction,
+    selectedTool: 'windmill',
+    poweredCells,
+    totalGeneration,
+    totalConsumption,
+    showSettlement: false,
+  };
+}
+
+type GameStateActions = Pick<
+  GameState,
+  | 'setSelectedTool'
+  | 'placeOrRemove'
+  | 'rotateCell'
+  | 'repairCell'
+  | 'tick'
+  | 'resetGame'
+  | 'openSettlement'
+  | 'closeSettlement'
+>;
+
 export const useGameStore = create<GameState>((set, get) => ({
-  grid: createEmptyGrid(),
-  dayTime: 20,
-  storedPower: 10,
-  maxStorage: 0,
-  satisfaction: 50,
-  selectedTool: 'windmill',
-  poweredCells: new Set(),
-  totalGeneration: 0,
-  totalConsumption: 0,
+  ...initGame(),
 
   setSelectedTool: (tool) => set({ selectedTool: tool }),
 
@@ -86,22 +173,24 @@ export const useGameStore = create<GameState>((set, get) => ({
       };
     }
 
-    const { poweredCells, totalGeneration, totalConsumption, batteryCapacity } =
-      calculatePowerNetwork(newGrid, state.dayTime);
+    const result = recalcGrid(newGrid, state.dayTime, state.storedPower);
 
-    for (let yy = 0; yy < GRID_SIZE; yy++) {
-      for (let xx = 0; xx < GRID_SIZE; xx++) {
-        newGrid[yy][xx].powered = poweredCells.has(`${xx},${yy}`);
-      }
-    }
+    const nextState = {
+      grid: result.newGrid,
+      poweredCells: result.poweredCells,
+      totalGeneration: result.totalGeneration,
+      totalConsumption: result.totalConsumption,
+      maxStorage: result.batteryCapacity,
+    };
 
-    set({
-      grid: newGrid,
-      poweredCells,
-      totalGeneration,
-      totalConsumption,
-      maxStorage: batteryCapacity,
+    saveToLocalStorage({
+      grid: result.newGrid,
+      dayTime: state.dayTime,
+      storedPower: state.storedPower,
+      satisfaction: state.satisfaction,
     });
+
+    set(nextState);
   },
 
   rotateCell: (x, y) => {
@@ -112,22 +201,24 @@ export const useGameStore = create<GameState>((set, get) => ({
     const newGrid = state.grid.map((row) => row.map((c) => ({ ...c })));
     newGrid[y][x].rotation = (cell.rotation + 1) % 6;
 
-    const { poweredCells, totalGeneration, totalConsumption, batteryCapacity } =
-      calculatePowerNetwork(newGrid, state.dayTime);
+    const result = recalcGrid(newGrid, state.dayTime, state.storedPower);
 
-    for (let yy = 0; yy < GRID_SIZE; yy++) {
-      for (let xx = 0; xx < GRID_SIZE; xx++) {
-        newGrid[yy][xx].powered = poweredCells.has(`${xx},${yy}`);
-      }
-    }
+    const nextState = {
+      grid: result.newGrid,
+      poweredCells: result.poweredCells,
+      totalGeneration: result.totalGeneration,
+      totalConsumption: result.totalConsumption,
+      maxStorage: result.batteryCapacity,
+    };
 
-    set({
-      grid: newGrid,
-      poweredCells,
-      totalGeneration,
-      totalConsumption,
-      maxStorage: batteryCapacity,
+    saveToLocalStorage({
+      grid: result.newGrid,
+      dayTime: state.dayTime,
+      storedPower: state.storedPower,
+      satisfaction: state.satisfaction,
     });
+
+    set(nextState);
   },
 
   repairCell: (x, y) => {
@@ -138,22 +229,24 @@ export const useGameStore = create<GameState>((set, get) => ({
     const newGrid = state.grid.map((row) => row.map((c) => ({ ...c })));
     newGrid[y][x].faulty = false;
 
-    const { poweredCells, totalGeneration, totalConsumption, batteryCapacity } =
-      calculatePowerNetwork(newGrid, state.dayTime);
+    const result = recalcGrid(newGrid, state.dayTime, state.storedPower);
 
-    for (let yy = 0; yy < GRID_SIZE; yy++) {
-      for (let xx = 0; xx < GRID_SIZE; xx++) {
-        newGrid[yy][xx].powered = poweredCells.has(`${xx},${yy}`);
-      }
-    }
+    const nextState = {
+      grid: result.newGrid,
+      poweredCells: result.poweredCells,
+      totalGeneration: result.totalGeneration,
+      totalConsumption: result.totalConsumption,
+      maxStorage: result.batteryCapacity,
+    };
 
-    set({
-      grid: newGrid,
-      poweredCells,
-      totalGeneration,
-      totalConsumption,
-      maxStorage: batteryCapacity,
+    saveToLocalStorage({
+      grid: result.newGrid,
+      dayTime: state.dayTime,
+      storedPower: state.storedPower,
+      satisfaction: state.satisfaction,
     });
+
+    set(nextState);
   },
 
   tick: () => {
@@ -170,8 +263,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     const newDayTime = (state.dayTime + 0.5) % DAY_LENGTH;
+
     const { poweredCells, totalGeneration, totalConsumption, batteryCapacity } =
-      calculatePowerNetwork(newGrid, newDayTime);
+      calculatePowerNetwork(newGrid, newDayTime, state.storedPower);
 
     for (let yy = 0; yy < GRID_SIZE; yy++) {
       for (let xx = 0; xx < GRID_SIZE; xx++) {
@@ -210,6 +304,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       newSatisfaction = Math.max(0, state.satisfaction - 0.3);
     }
 
+    saveToLocalStorage({
+      grid: newGrid,
+      dayTime: newDayTime,
+      storedPower: newStoredPower,
+      satisfaction: newSatisfaction,
+    });
+
     set({
       grid: newGrid,
       dayTime: newDayTime,
@@ -223,16 +324,23 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   resetGame: () => {
+    localStorage.removeItem(STORAGE_KEY);
+    const fresh = createEmptyGrid();
+    const result = recalcGrid(fresh, 20, 10);
     set({
-      grid: createEmptyGrid(),
+      grid: result.newGrid,
       dayTime: 20,
       storedPower: 10,
-      maxStorage: 0,
+      maxStorage: result.batteryCapacity,
       satisfaction: 50,
       selectedTool: 'windmill',
-      poweredCells: new Set(),
-      totalGeneration: 0,
-      totalConsumption: 0,
+      poweredCells: result.poweredCells,
+      totalGeneration: result.totalGeneration,
+      totalConsumption: result.totalConsumption,
+      showSettlement: false,
     });
   },
+
+  openSettlement: () => set({ showSettlement: true }),
+  closeSettlement: () => set({ showSettlement: false }),
 }));
